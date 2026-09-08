@@ -1,3 +1,8 @@
-// model/UrgencyLevel.java
 package com.hopital.urgences.model;
-public enum UrgencyLevel { CRITIQUE, ELEVEE, MOYENNE, FAIBLE }
+
+public enum UrgencyLevel {
+    CRITIQUE,
+    ELEVEE,
+    MOYENNE,
+    FAIBLE
+}

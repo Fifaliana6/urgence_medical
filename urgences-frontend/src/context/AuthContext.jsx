@@ -1,38 +1,39 @@
-import { createContext, useContext, useState, useCallback } from 'react'
-import axios from 'axios'
-import { getStoredAuth, storeAuth, clearAuth } from '../api/client'
+import { createContext, useContext, useState, useCallback } from 'react';
+import { loginRequest } from '../api/authApi';
 
-const AuthContext = createContext(null)
+const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [auth, setAuth] = useState(() => getStoredAuth())
+  const [token, setToken] = useState(() => localStorage.getItem('urgences_token'));
+  const [user, setUser] = useState(() => {
+    const stored = localStorage.getItem('urgences_user');
+    return stored ? JSON.parse(stored) : null;
+  });
 
-  const login = useCallback(async (username, password) => {
-    const token = btoa(`${username}:${password}`)
-    // Validate the credentials directly against a lightweight authenticated
-    // endpoint before persisting them -- this is what turns a wrong password
-    // into a clear "Identifiants incorrects" instead of a silent bad session.
-    await axios.get('/api/doctors', {
-      headers: { Authorization: `Basic ${token}` },
-    })
-    const stored = storeAuth(username, password)
-    setAuth(stored)
-  }, [])
+  const login = useCallback(async (email, password) => {
+    const data = await loginRequest(email, password);
+    const userData = { userId: data.userId, nom: data.nom, role: data.role };
+    localStorage.setItem('urgences_token', data.token);
+    localStorage.setItem('urgences_user', JSON.stringify(userData));
+    setToken(data.token);
+    setUser(userData);
+    return userData;
+  }, []);
 
   const logout = useCallback(() => {
-    clearAuth()
-    setAuth(null)
-  }, [])
+    localStorage.removeItem('urgences_token');
+    localStorage.removeItem('urgences_user');
+    setToken(null);
+    setUser(null);
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ auth, isAuthenticated: !!auth, login, logout }}>
+    <AuthContext.Provider value={{ token, user, login, logout }}>
       {children}
     </AuthContext.Provider>
-  )
+  );
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
+  return useContext(AuthContext);
 }

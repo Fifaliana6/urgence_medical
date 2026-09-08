@@ -1,548 +1,500 @@
-import { useEffect, useState, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import {
-  ArrowLeft,
-  Stethoscope,
-  Pill,
-  FlaskConical,
-  Plus,
-  DoorOpen,
-  BedDouble,
-  Receipt,
-  CheckCircle2,
-} from 'lucide-react'
-import api from '../api/client'
-import Modal from '../components/Modal'
-import Badge from '../components/Badge'
-import {
-  Card,
-  PageHeader,
-  Spinner,
-  ErrorBanner,
-  Button,
-  Input,
-  Select,
-  Textarea,
-} from '../components/Primitives'
-import {
-  URGENCY_META,
-  VISIT_STATUS_META,
-  EXAM_STATUS_META,
-  formatDateTime,
-} from '../lib/constants'
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { getVisiteDetail, sortirPatient, hospitaliserPatient, finHospitalisation } from '../api/visitApi';
+import { ouvrirConsultation, ajouterPrescription, demanderExamen } from '../api/consultationApi';
+import { getFactureParVisite, telechargerFacturePdf, marquerFacturePayee } from '../api/invoiceApi';
+import { telechargerRapportExamen } from '../api/examApi';
+import { listerLits } from '../api/resourceApi';
+import { declencherTelechargement } from '../utils/download';
+import { obtenirMessageErreur } from '../utils/apiError';
+import { useAuth } from '../context/AuthContext';
+import { useNotifications } from '../context/NotificationContext';
+import UrgencyBadge from '../components/UrgencyBadge';
+import StatusBadge from '../components/StatusBadge';
+
+const TYPES_EXAMEN = ['BIOLOGIE', 'IMAGERIE'];
+const SERVICES_MEDICAUX = ['CARDIOLOGIE', 'REANIMATION', 'MEDECINE_GENERALE', 'PEDIATRIE', 'CHIRURGIE'];
 
 export default function VisitDetailPage() {
-  const { id } = useParams()
-  const navigate = useNavigate()
+  const { id } = useParams();
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const { notifications } = useNotifications() || { notifications: [] };
+  const dernierNombreNotifs = useRef(0);
 
-  const [visit, setVisit] = useState(null)
-  const [consultations, setConsultations] = useState([])
-  const [doctors, setDoctors] = useState([])
-  const [invoice, setInvoice] = useState(null)
-  const [error, setError] = useState(null)
-  const [showDecision, setShowDecision] = useState(false)
+  const [visite, setVisite] = useState(null);
+  const [facture, setFacture] = useState(null);
+  const [litsDisponibles, setLitsDisponibles] = useState([]);
+  const [chargement, setChargement] = useState(true);
+  const [erreur, setErreur] = useState('');
+  const [action, setAction] = useState(false);
+  const [telechargementEnCours, setTelechargementEnCours] = useState(null);
 
-  const refresh = useCallback(async () => {
+  const [diagnostic, setDiagnostic] = useState('');
+  const [planTraitement, setPlanTraitement] = useState('');
+
+  const [medicaments, setMedicaments] = useState([{ medicament: '', dosage: '', duree: '', instructions: '' }]);
+
+  const [typeExamen, setTypeExamen] = useState('BIOLOGIE');
+  const [libelleExamen, setLibelleExamen] = useState('');
+
+  const [serviceHospitalisation, setServiceHospitalisation] = useState('');
+  const [litChoisiId, setLitChoisiId] = useState('');
+
+  const peutAgirMedecin = user?.role === 'MEDECIN';
+  const peutVoirFacture = ['ADMIN', 'RECEPTIONIST', 'MEDECIN'].includes(user?.role);
+  const peutGererPaiement = user?.role === 'RECEPTIONIST';
+  const peutTelechargerRapport = ['ADMIN', 'MEDECIN', 'LABO_IMAGERIE'].includes(user?.role);
+
+  const charger = useCallback(async () => {
+    setErreur('');
     try {
-      const [visitRes, consultRes] = await Promise.all([
-        api.get(`/visits/${id}`),
-        api.get(`/consultations/visite/${id}`),
-      ])
-      setVisit(visitRes.data)
-      setConsultations(consultRes.data)
-      if (['DISCHARGED', 'HOSPITALIZED'].includes(visitRes.data.statut)) {
+      const data = await getVisiteDetail(id);
+      setVisite(data);
+
+      if (data.status === 'DISCHARGED' && peutVoirFacture) {
         try {
-          const { data } = await api.get(`/invoices/visite/${id}`)
-          setInvoice(data)
+          const f = await getFactureParVisite(id);
+          setFacture(f);
         } catch {
-          setInvoice(null)
+          setFacture(null);
         }
       }
-    } catch {
-      setError('Impossible de charger cette visite.')
+    } catch (err) {
+      setErreur(
+        err.response?.status === 404
+          ? "Cette visite n'existe pas."
+          : 'Erreur lors du chargement du dossier. Vérifiez que le serveur backend est démarré.'
+      );
+    } finally {
+      setChargement(false);
     }
-  }, [id])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   useEffect(() => {
-    refresh()
-    api.get('/doctors').then((res) => setDoctors(res.data)).catch(() => {})
-  }, [refresh])
+    charger();
+  }, [charger]);
 
-  if (error) return <ErrorBanner message={error} />
-  if (!visit) return <Spinner />
-
-  const isClosed = visit.statut === 'DISCHARGED' || visit.statut === 'HOSPITALIZED'
-
-  return (
-    <div className="mx-auto max-w-3xl">
-      <button
-        onClick={() => navigate('/')}
-        className="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-soft hover:text-ink"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Retour à la file d'attente
-      </button>
-
-      <PageHeader
-        title={`${visit.patient?.nom} ${visit.patient?.prenom}`}
-        description={`Visite #${visit.id} · arrivée le ${formatDateTime(visit.dateArrivee)}`}
-        actions={
-          !isClosed && (
-            <Button onClick={() => setShowDecision(true)}>
-              <CheckCircle2 className="h-4 w-4" />
-              Décision de sortie
-            </Button>
-          )
-        }
-      />
-
-      {/* Visit summary */}
-      <Card className="mb-6 grid grid-cols-2 gap-4 p-5 sm:grid-cols-4">
-        <SummaryItem label="Urgence">
-          <Badge meta={URGENCY_META[visit.niveauUrgence]} withDot />
-        </SummaryItem>
-        <SummaryItem label="Statut">
-          <Badge meta={VISIT_STATUS_META[visit.statut]} />
-        </SummaryItem>
-        <SummaryItem label="Médecin">
-          {visit.medecin ? `Dr ${visit.medecin.nom}` : '—'}
-        </SummaryItem>
-        <SummaryItem label={visit.lit ? 'Lit' : 'Salle'}>
-          {visit.lit ? `${visit.lit.numero} (${visit.lit.service})` : visit.salle ? visit.salle.nom : '—'}
-        </SummaryItem>
-      </Card>
-
-      {visit.symptomes && (
-        <Card className="mb-6 p-5">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-ink-soft">
-            Motif d'admission
-          </p>
-          <p className="text-sm text-ink">{visit.symptomes}</p>
-        </Card>
-      )}
-
-      {invoice && (
-        <Card className="mb-6 flex items-center justify-between p-5">
-          <div className="flex items-center gap-3">
-            <Receipt className="h-5 w-5 text-accent" />
-            <div>
-              <p className="text-sm font-medium text-ink">Facture générée</p>
-              <p className="text-xs text-ink-soft">
-                Statut : {invoice.statut === 'PAYEE' ? 'Payée' : 'En attente de paiement'}
-              </p>
-            </div>
-          </div>
-          <Link to="/invoices" state={{ visitId: visit.id }} className="text-sm font-medium text-accent hover:underline">
-            Voir la facture
-          </Link>
-        </Card>
-      )}
-
-      {/* Consultations */}
-      <div className="mb-3 flex items-center gap-2">
-        <Stethoscope className="h-4 w-4 text-ink-soft" />
-        <h2 className="text-sm font-semibold text-ink">Consultations</h2>
-      </div>
-
-      <div className="space-y-4">
-        {consultations.map((c) => (
-          <ConsultationCard key={c.id} consultation={c} onChanged={refresh} disabled={isClosed} />
-        ))}
-
-        {!isClosed && (
-          <NewConsultationForm visitId={visit.id} doctors={doctors} onCreated={refresh} />
-        )}
-      </div>
-
-      {showDecision && (
-        <DecisionModal
-          visitId={visit.id}
-          onClose={() => setShowDecision(false)}
-          onDecided={() => {
-            setShowDecision(false)
-            refresh()
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
-function SummaryItem({ label, children }) {
-  return (
-    <div>
-      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-ink-soft">{label}</p>
-      <div className="text-sm text-ink">{children}</div>
-    </div>
-  )
-}
-
-function ConsultationCard({ consultation, onChanged, disabled }) {
-  const [showPrescriptionForm, setShowPrescriptionForm] = useState(false)
-  const [showExamForm, setShowExamForm] = useState(false)
-
-  return (
-    <Card className="p-5">
-      <div className="mb-3 flex items-start justify-between">
-        <div>
-          <p className="text-xs text-ink-soft">
-            Dr {consultation.medecin?.nom} · {formatDateTime(consultation.dateConsultation)}
-          </p>
-          {consultation.diagnostic && (
-            <p className="mt-1 text-sm font-medium text-ink">{consultation.diagnostic}</p>
-          )}
-          {consultation.planTraitement && (
-            <p className="mt-1 text-sm text-ink-soft">{consultation.planTraitement}</p>
-          )}
-        </div>
-      </div>
-
-      {/* Prescriptions */}
-      <div className="mt-4 border-t border-border pt-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-            <Pill className="h-3.5 w-3.5" />
-            Prescriptions
-          </div>
-          {!disabled && (
-            <button
-              onClick={() => setShowPrescriptionForm((v) => !v)}
-              className="text-xs font-medium text-accent hover:underline"
-            >
-              + Ajouter
-            </button>
-          )}
-        </div>
-        {consultation.prescriptions?.length > 0 ? (
-          <ul className="space-y-1">
-            {consultation.prescriptions.map((p) => (
-              <li key={p.id} className="text-sm text-ink">
-                {p.medicament}
-                {p.dosage && <span className="text-ink-soft"> · {p.dosage}</span>}
-                {p.duree && <span className="text-ink-soft"> · {p.duree}</span>}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-ink-faint">Aucune prescription.</p>
-        )}
-        {showPrescriptionForm && (
-          <PrescriptionForm
-            consultationId={consultation.id}
-            onAdded={() => {
-              setShowPrescriptionForm(false)
-              onChanged()
-            }}
-          />
-        )}
-      </div>
-
-      {/* Exams */}
-      <div className="mt-4 border-t border-border pt-4">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-            <FlaskConical className="h-3.5 w-3.5" />
-            Examens
-          </div>
-          {!disabled && (
-            <button
-              onClick={() => setShowExamForm((v) => !v)}
-              className="text-xs font-medium text-accent hover:underline"
-            >
-              + Ajouter
-            </button>
-          )}
-        </div>
-        {consultation.examens?.length > 0 ? (
-          <ul className="space-y-2">
-            {consultation.examens.map((exam) => (
-              <ExamRow key={exam.id} exam={exam} onChanged={onChanged} disabled={disabled} />
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-ink-faint">Aucun examen demandé.</p>
-        )}
-        {showExamForm && (
-          <ExamForm
-            consultationId={consultation.id}
-            onAdded={() => {
-              setShowExamForm(false)
-              onChanged()
-            }}
-          />
-        )}
-      </div>
-    </Card>
-  )
-}
-
-function ExamRow({ exam, onChanged, disabled }) {
-  const [editing, setEditing] = useState(false)
-  const [resultat, setResultat] = useState('')
-  const [saving, setSaving] = useState(false)
-  const hasResult = exam.statut === 'RESULTAT_DISPONIBLE'
-
-  async function submit(e) {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      await api.put(`/exams/${exam.id}/resultat`, resultat, {
-        headers: { 'Content-Type': 'text/plain' },
-      })
-      setEditing(false)
-      onChanged()
-    } finally {
-      setSaving(false)
+  useEffect(() => {
+    if (notifications.length > dernierNombreNotifs.current) {
+      const nouvelles = notifications.slice(0, notifications.length - dernierNombreNotifs.current);
+      if (nouvelles.some((n) => String(n.visitId) === String(id))) {
+        charger();
+      }
     }
-  }
+    dernierNombreNotifs.current = notifications.length;
+  }, [notifications, id, charger]);
 
-  return (
-    <li className="rounded-md bg-bg/60 p-2.5">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-ink">{exam.type}</span>
-        <div className="flex items-center gap-2">
-          <Badge meta={EXAM_STATUS_META[exam.statut]} />
-          {!hasResult && !disabled && !editing && (
-            <button
-              onClick={() => setEditing(true)}
-              className="text-xs font-medium text-accent hover:underline"
-            >
-              Saisir résultat
-            </button>
-          )}
-        </div>
-      </div>
-      {hasResult && exam.resultat && (
-        <p className="mt-1.5 text-sm text-ink-soft">{exam.resultat}</p>
-      )}
-      {editing && (
-        <form onSubmit={submit} className="mt-2 flex gap-2">
-          <Input
-            autoFocus
-            placeholder="Résultat de l'examen…"
-            value={resultat}
-            onChange={(e) => setResultat(e.target.value)}
-            className="flex-1"
-          />
-          <Button type="submit" disabled={saving || !resultat.trim()}>
-            Valider
-          </Button>
-        </form>
-      )}
-    </li>
-  )
-}
-
-function NewConsultationForm({ visitId, doctors, onCreated }) {
-  const [medecinId, setMedecinId] = useState('')
-  const [diagnostic, setDiagnostic] = useState('')
-  const [planTraitement, setPlanTraitement] = useState('')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  async function submit(e) {
-    e.preventDefault()
-    setError(null)
-    setSubmitting(true)
-    try {
-      await api.post('/consultations', {
-        visitId: Number(visitId),
-        medecinId: Number(medecinId),
-        diagnostic,
-        planTraitement,
-      })
-      setDiagnostic('')
-      setPlanTraitement('')
-      onCreated()
-    } catch {
-      setError('La création de la consultation a échoué.')
-    } finally {
-      setSubmitting(false)
+  useEffect(() => {
+    if (peutAgirMedecin) {
+      listerLits().then(setLitsDisponibles).catch(() => {});
     }
-  }
+  }, [peutAgirMedecin]);
 
-  return (
-    <Card className="border-dashed p-5">
-      <p className="mb-3 flex items-center gap-1.5 text-sm font-medium text-ink">
-        <Plus className="h-4 w-4" />
-        Nouvelle consultation
-      </p>
-      <ErrorBanner message={error} />
-      <form onSubmit={submit} className="space-y-3">
-        <Select label="Médecin" required value={medecinId} onChange={(e) => setMedecinId(e.target.value)}>
-          <option value="">Sélectionner un médecin…</option>
-          {doctors.map((d) => (
-            <option key={d.id} value={d.id}>
-              Dr {d.nom} {d.prenom} — {d.specialite}
-            </option>
-          ))}
-        </Select>
-        <Textarea
-          label="Diagnostic"
-          rows={2}
-          value={diagnostic}
-          onChange={(e) => setDiagnostic(e.target.value)}
-        />
-        <Textarea
-          label="Plan de traitement"
-          rows={2}
-          value={planTraitement}
-          onChange={(e) => setPlanTraitement(e.target.value)}
-        />
-        <Button type="submit" disabled={submitting || !medecinId}>
-          Enregistrer la consultation
-        </Button>
-      </form>
-    </Card>
-  )
-}
+  const consultationCourante = visite?.consultations?.[visite.consultations.length - 1];
+  const visiteCloturee = visite?.status === 'DISCHARGED';
+  // Un patient hospitalisé est toujours en prise en charge active : le médecin doit
+  // pouvoir continuer à prescrire et demander des examens de suivi. Seule une sortie
+  // réelle (DISCHARGED) verrouille complètement le dossier.
+  const priseEnChargeActive = peutAgirMedecin && visite?.status !== 'DISCHARGED';
+  const litsPourService = litsDisponibles.filter((l) => l.service === serviceHospitalisation && !l.occupe);
 
-function PrescriptionForm({ consultationId, onAdded }) {
-  const [form, setForm] = useState({ medicament: '', dosage: '', duree: '', instructions: '' })
-  const [submitting, setSubmitting] = useState(false)
-
-  async function submit(e) {
-    e.preventDefault()
-    setSubmitting(true)
+  async function handleOuvrirConsultation(e) {
+    e.preventDefault();
+    setErreur('');
+    setAction(true);
     try {
-      await api.post(`/consultations/${consultationId}/prescriptions`, form)
-      onAdded()
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="mt-3 space-y-2 rounded-md bg-bg/60 p-3">
-      <div className="grid grid-cols-3 gap-2">
-        <Input
-          placeholder="Médicament"
-          required
-          value={form.medicament}
-          onChange={(e) => setForm({ ...form, medicament: e.target.value })}
-        />
-        <Input
-          placeholder="Dosage"
-          value={form.dosage}
-          onChange={(e) => setForm({ ...form, dosage: e.target.value })}
-        />
-        <Input
-          placeholder="Durée"
-          value={form.duree}
-          onChange={(e) => setForm({ ...form, duree: e.target.value })}
-        />
-      </div>
-      <Button type="submit" variant="secondary" disabled={submitting || !form.medicament.trim()}>
-        Ajouter la prescription
-      </Button>
-    </form>
-  )
-}
-
-function ExamForm({ consultationId, onAdded }) {
-  const [type, setType] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  async function submit(e) {
-    e.preventDefault()
-    setSubmitting(true)
-    try {
-      await api.post(`/consultations/${consultationId}/exams`, { type })
-      onAdded()
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="mt-3 flex gap-2 rounded-md bg-bg/60 p-3">
-      <Input
-        placeholder="Type d'examen (ex : Bilan sanguin)"
-        required
-        value={type}
-        onChange={(e) => setType(e.target.value)}
-        className="flex-1"
-      />
-      <Button type="submit" variant="secondary" disabled={submitting || !type.trim()}>
-        Demander
-      </Button>
-    </form>
-  )
-}
-
-function DecisionModal({ visitId, onClose, onDecided }) {
-  const [statutFinal, setStatutFinal] = useState('DISCHARGED')
-  const [serviceHospitalisation, setServiceHospitalisation] = useState('')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  async function submit(e) {
-    e.preventDefault()
-    setError(null)
-    setSubmitting(true)
-    try {
-      await api.put(`/visits/${visitId}/decision`, {
-        statutFinal,
-        serviceHospitalisation: statutFinal === 'HOSPITALIZED' ? serviceHospitalisation : null,
-      })
-      onDecided()
+      await ouvrirConsultation(id, { diagnostic, planTraitement });
+      setDiagnostic('');
+      setPlanTraitement('');
+      await charger();
     } catch (err) {
-      setError(err.response?.data?.erreur || 'La décision n\u2019a pas pu être enregistrée.')
+      setErreur(err.response?.data?.message || "Erreur lors de l'ouverture de la consultation.");
     } finally {
-      setSubmitting(false)
+      setAction(false);
     }
   }
 
+  function ajouterLigneMedicament() {
+    setMedicaments([...medicaments, { medicament: '', dosage: '', duree: '', instructions: '' }]);
+  }
+
+  function retirerLigneMedicament(index) {
+    setMedicaments(medicaments.filter((_, i) => i !== index));
+  }
+
+  function modifierLigneMedicament(index, champ, valeur) {
+    const copie = [...medicaments];
+    copie[index][champ] = valeur;
+    setMedicaments(copie);
+  }
+
+  async function handleAjouterPrescription(e) {
+    e.preventDefault();
+    setErreur('');
+    setAction(true);
+    try {
+      const items = medicaments.filter((m) => m.medicament.trim() !== '');
+      if (items.length === 0) {
+        setErreur('Ajoutez au moins un médicament.');
+        setAction(false);
+        return;
+      }
+      await ajouterPrescription(consultationCourante.id, { items });
+      setMedicaments([{ medicament: '', dosage: '', duree: '', instructions: '' }]);
+      await charger();
+    } catch (err) {
+      setErreur(err.response?.data?.message || "Erreur lors de l'ajout de la prescription.");
+    } finally {
+      setAction(false);
+    }
+  }
+
+  async function handleDemanderExamen(e) {
+    e.preventDefault();
+    setErreur('');
+    setAction(true);
+    try {
+      await demanderExamen(consultationCourante.id, { type: typeExamen, libelle: libelleExamen });
+      setLibelleExamen('');
+      await charger();
+    } catch (err) {
+      setErreur(err.response?.data?.message || "Erreur lors de la demande d'examen.");
+    } finally {
+      setAction(false);
+    }
+  }
+
+  async function handleSortie() {
+    if (!window.confirm('Confirmer la sortie directe du patient (statut DISCHARGED) ?')) return;
+    setErreur('');
+    setAction(true);
+    try {
+      await sortirPatient(id, {});
+      await charger();
+    } catch (err) {
+      setErreur(err.response?.data?.message || 'Erreur lors de la validation de la sortie.');
+    } finally {
+      setAction(false);
+    }
+  }
+
+  async function handleHospitalisation(e) {
+    e.preventDefault();
+    if (!serviceHospitalisation) {
+      setErreur("Sélectionnez le service d'hospitalisation.");
+      return;
+    }
+    setErreur('');
+    setAction(true);
+    try {
+      await hospitaliserPatient(id, {
+        service: serviceHospitalisation,
+        litId: litChoisiId ? Number(litChoisiId) : undefined,
+      });
+      await charger();
+    } catch (err) {
+      setErreur(err.response?.data?.message || "Erreur lors de l'hospitalisation.");
+    } finally {
+      setAction(false);
+    }
+  }
+
+  async function handleFinHospitalisation() {
+    if (!window.confirm('Confirmer la fin du séjour hospitalier ? Le lit sera libéré et la facture générée.')) return;
+    setErreur('');
+    setAction(true);
+    try {
+      await finHospitalisation(id);
+      await charger();
+    } catch (err) {
+      setErreur(err.response?.data?.message || 'Erreur lors de la clôture du séjour.');
+    } finally {
+      setAction(false);
+    }
+  }
+
+  async function handleTelechargerFacture() {
+    setErreur('');
+    setTelechargementEnCours('facture');
+    try {
+      const blob = await telechargerFacturePdf(facture.id);
+      declencherTelechargement(blob, `facture-${facture.id}.pdf`);
+    } catch (err) {
+      const message = await obtenirMessageErreur(err, 'Erreur lors du téléchargement de la facture.');
+      setErreur(message);
+    } finally {
+      setTelechargementEnCours(null);
+    }
+  }
+
+  async function handleTelechargerRapport(examId) {
+    setErreur('');
+    setTelechargementEnCours(`examen-${examId}`);
+    try {
+      const blob = await telechargerRapportExamen(examId);
+      declencherTelechargement(blob, `rapport-examen-${examId}.pdf`);
+    } catch (err) {
+      const message = await obtenirMessageErreur(err, 'Erreur lors du téléchargement du rapport.');
+      setErreur(message);
+    } finally {
+      setTelechargementEnCours(null);
+    }
+  }
+
+  async function handleMarquerPayee() {
+    if (!window.confirm('Confirmer que cette facture a été payée ?')) return;
+    setErreur('');
+    setAction(true);
+    try {
+      const factureMiseAJour = await marquerFacturePayee(facture.id);
+      setFacture(factureMiseAJour);
+    } catch (err) {
+      setErreur(err.response?.data?.message || 'Erreur lors de la mise à jour du paiement.');
+    } finally {
+      setAction(false);
+    }
+  }
+
+  if (chargement) return <div className="page-container"><p>Chargement du dossier...</p></div>;
+
+  if (erreur && !visite) {
+    return (
+      <div className="page-container">
+        <div className="alert alert-error">{erreur}</div>
+        <button className="btn btn-outline" onClick={() => navigate('/attente')}>Retour à la liste</button>
+      </div>
+    );
+  }
+
   return (
-    <Modal title="Décision de sortie" onClose={onClose}>
-      <ErrorBanner message={error} />
-      <form onSubmit={submit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setStatutFinal('DISCHARGED')}
-            className={`flex flex-col items-center gap-1.5 rounded-md border px-3 py-3 text-sm font-medium ${
-              statutFinal === 'DISCHARGED'
-                ? 'border-accent bg-accent-soft text-accent-dark'
-                : 'border-border text-ink-soft hover:bg-bg'
-            }`}
-          >
-            <DoorOpen className="h-4 w-4" />
-            Sortie
-          </button>
-          <button
-            type="button"
-            onClick={() => setStatutFinal('HOSPITALIZED')}
-            className={`flex flex-col items-center gap-1.5 rounded-md border px-3 py-3 text-sm font-medium ${
-              statutFinal === 'HOSPITALIZED'
-                ? 'border-accent bg-accent-soft text-accent-dark'
-                : 'border-border text-ink-soft hover:bg-bg'
-            }`}
-          >
-            <BedDouble className="h-4 w-4" />
-            Hospitalisation
+    <div className="page-container">
+      <button className="btn btn-outline btn-sm" onClick={() => navigate('/attente')}>← Retour</button>
+
+      <div className="visit-header">
+        <h1>{visite.patient.prenom} {visite.patient.nom}</h1>
+        <div className="visit-header-badges">
+          <UrgencyBadge niveau={visite.niveauUrgence} />
+          <StatusBadge status={visite.status} />
+        </div>
+      </div>
+
+      {erreur && <div className="alert alert-error">{erreur}</div>}
+
+      <div className="card">
+        <h2>Informations patient</h2>
+        <div className="info-grid">
+          <div><span className="info-label">Symptômes :</span> {visite.symptomes}</div>
+          <div><span className="info-label">Arrivée :</span> {new Date(visite.heureArrivee).toLocaleString('fr-FR')}</div>
+          <div><span className="info-label">Médecin :</span> {visite.medecinNom || 'Non assigné'}</div>
+          <div><span className="info-label">Salle :</span> {visite.salleAffectee || '—'}</div>
+          {visite.status === 'HOSPITALIZED' && (
+            <div><span className="info-label">Lit :</span> {visite.litAffecte || '—'}</div>
+          )}
+        </div>
+      </div>
+
+      {(consultationCourante || (peutAgirMedecin && !visiteCloturee)) && (
+        <div className="card">
+          <h2>Consultation, diagnostic et plan de traitement</h2>
+
+          {!consultationCourante ? (
+            <form className="form-grid" onSubmit={handleOuvrirConsultation}>
+              <div className="form-group form-group-full">
+                <label>Diagnostic *</label>
+                <textarea required rows={2} value={diagnostic} onChange={(e) => setDiagnostic(e.target.value)} />
+              </div>
+              <div className="form-group form-group-full">
+                <label>Plan de traitement *</label>
+                <textarea required rows={2} value={planTraitement} onChange={(e) => setPlanTraitement(e.target.value)} />
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary" disabled={action}>Ouvrir la consultation</button>
+              </div>
+            </form>
+          ) : (
+            <div className="consultation-summary">
+              <p><span className="info-label">Diagnostic :</span> {consultationCourante.diagnostic}</p>
+              <p><span className="info-label">Plan de traitement :</span> {consultationCourante.planTraitement}</p>
+              <p className="text-muted">Consultation par {consultationCourante.medecinNom} le {new Date(consultationCourante.dateConsultation).toLocaleString('fr-FR')}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {consultationCourante && (
+        <div className="card">
+          <h2>Prescription (Ordonnance)</h2>
+
+          {priseEnChargeActive && (
+            <>
+              <p className="text-muted">Le prix des médicaments n'est pas géré ici — la facturation ne porte que sur la consultation, les analyses et le séjour.</p>
+              <form onSubmit={handleAjouterPrescription}>
+                {medicaments.map((m, idx) => (
+                  <div className="prescription-row" key={idx}>
+                    <input placeholder="Médicament *" value={m.medicament} onChange={(e) => modifierLigneMedicament(idx, 'medicament', e.target.value)} />
+                    <input placeholder="Dosage *" value={m.dosage} onChange={(e) => modifierLigneMedicament(idx, 'dosage', e.target.value)} />
+                    <input placeholder="Durée" value={m.duree} onChange={(e) => modifierLigneMedicament(idx, 'duree', e.target.value)} />
+                    <input placeholder="Instructions" value={m.instructions} onChange={(e) => modifierLigneMedicament(idx, 'instructions', e.target.value)} />
+                    {medicaments.length > 1 && (
+                      <button type="button" className="btn btn-outline btn-sm" onClick={() => retirerLigneMedicament(idx)}>✕</button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" className="btn btn-outline btn-sm" onClick={ajouterLigneMedicament}>+ Ajouter un médicament</button>
+                <div className="form-actions">
+                  <button type="submit" className="btn btn-primary" disabled={action}>Enregistrer la prescription</button>
+                </div>
+              </form>
+            </>
+          )}
+
+          {consultationCourante.prescriptions.length > 0 ? (
+            <div className="prescriptions-list">
+              <h3>Prescriptions enregistrées</h3>
+              {consultationCourante.prescriptions.map((p) => (
+                <ul key={p.id} className="prescription-items">
+                  {p.items.map((it) => (
+                    <li key={it.id}>{it.medicament} — {it.dosage} {it.duree && `(${it.duree})`}</li>
+                  ))}
+                </ul>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted">Aucune prescription enregistrée.</p>
+          )}
+        </div>
+      )}
+
+      {consultationCourante && (
+        <div className="card">
+          <h2>Examens complémentaires</h2>
+
+          {priseEnChargeActive && (
+            <form className="form-inline" onSubmit={handleDemanderExamen}>
+              <select value={typeExamen} onChange={(e) => setTypeExamen(e.target.value)}>
+                {TYPES_EXAMEN.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <input placeholder="Libellé (ex : NFS, Radio thorax...)" required value={libelleExamen} onChange={(e) => setLibelleExamen(e.target.value)} />
+              <button type="submit" className="btn btn-secondary" disabled={action}>Demander</button>
+            </form>
+          )}
+
+          {consultationCourante.exams.length > 0 ? (
+            <table className="table table-compact">
+              <thead><tr><th>Type</th><th>Libellé</th><th>Statut</th><th>Résultat</th><th></th></tr></thead>
+              <tbody>
+                {consultationCourante.exams.map((ex) => (
+                  <tr key={ex.id}>
+                    <td>{ex.type}</td>
+                    <td>{ex.libelle}</td>
+                    <td><StatusBadge status={ex.statut} /></td>
+                    <td>{ex.resultat || <span className="text-muted">En attente</span>}</td>
+                    <td>
+                      {ex.statut === 'RESULTATS_DISPONIBLES' && peutTelechargerRapport && (
+                        <button
+                          className="btn btn-outline btn-sm"
+                          disabled={telechargementEnCours === `examen-${ex.id}`}
+                          onClick={() => handleTelechargerRapport(ex.id)}
+                        >
+                          {telechargementEnCours === `examen-${ex.id}` ? 'Téléchargement...' : 'Rapport PDF'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-muted">Aucun examen demandé.</p>
+          )}
+        </div>
+      )}
+
+      {peutAgirMedecin && consultationCourante && !visiteCloturee && visite.status !== 'HOSPITALIZED' && (
+        <div className="card card-decision">
+          <h2>Décision de sortie ou d'hospitalisation</h2>
+          <div className="decision-actions">
+            <button className="btn btn-success" disabled={action} onClick={handleSortie}>
+              Autoriser la sortie (DISCHARGED)
+            </button>
+
+            <form className="form-inline" onSubmit={handleHospitalisation}>
+              <select value={serviceHospitalisation} onChange={(e) => { setServiceHospitalisation(e.target.value); setLitChoisiId(''); }}>
+                <option value="">Service d'hospitalisation...</option>
+                {SERVICES_MEDICAUX.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {serviceHospitalisation && (
+                <select value={litChoisiId} onChange={(e) => setLitChoisiId(e.target.value)}>
+                  <option value="">Assignation automatique</option>
+                  {litsPourService.map((l) => (
+                    <option key={l.id} value={l.id}>Lit {l.numero}</option>
+                  ))}
+                </select>
+              )}
+              {serviceHospitalisation && litsPourService.length === 0 && (
+                <span className="text-muted">Aucun lit libre dans ce service actuellement.</span>
+              )}
+              <button type="submit" className="btn btn-warning" disabled={action}>
+                Hospitaliser (HOSPITALIZED)
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {peutAgirMedecin && visite.status === 'HOSPITALIZED' && (
+        <div className="card card-decision">
+          <h2>Séjour en cours</h2>
+          <p className="text-muted">Le patient occupe actuellement {visite.litAffecte}. Vous pouvez continuer à prescrire et demander des examens de suivi ci-dessus tant que le séjour n'est pas terminé.</p>
+          <button className="btn btn-success" disabled={action} onClick={handleFinHospitalisation}>
+            Terminer l'hospitalisation (libère le lit)
           </button>
         </div>
+      )}
 
-        {statutFinal === 'HOSPITALIZED' && (
-          <Input
-            label="Service d'hospitalisation"
-            placeholder="ex : CARDIOLOGIE, REANIMATION…"
-            required
-            value={serviceHospitalisation}
-            onChange={(e) => setServiceHospitalisation(e.target.value.toUpperCase())}
-          />
-        )}
+      {peutVoirFacture && visite.status === 'DISCHARGED' && (
+        <div className="card">
+          <h2>Facture</h2>
+          {facture ? (
+            <>
+              <table className="table table-compact">
+                <thead><tr><th>Libellé</th><th>Montant (Ar)</th></tr></thead>
+                <tbody>
+                  {facture.items.map((it) => (
+                    <tr key={it.id}><td>{it.libelle}</td><td>{it.montant.toLocaleString('fr-FR')}</td></tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr><td><strong>Total</strong></td><td><strong>{facture.montantTotal.toLocaleString('fr-FR')} Ar</strong></td></tr>
+                </tfoot>
+              </table>
+              <div className="form-inline" style={{ marginTop: '0.75rem' }}>
+                <span className={`badge ${facture.statut === 'PAID' ? 'badge-facture-paid' : 'badge-facture-unpaid'}`}>
+                  {facture.statut === 'PAID' ? 'Payée' : 'Non payée'}
+                </span>
+                <button className="btn btn-outline btn-sm" disabled={telechargementEnCours === 'facture'} onClick={handleTelechargerFacture}>
+                  {telechargementEnCours === 'facture' ? 'Téléchargement...' : 'Télécharger la facture (PDF)'}
+                </button>
+                {peutGererPaiement && facture.statut !== 'PAID' && (
+                  <button className="btn btn-success btn-sm" disabled={action} onClick={handleMarquerPayee}>
+                    Marquer comme payée
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="text-muted">Facture en cours de génération...</p>
+          )}
+        </div>
+      )}
 
-        <p className="text-xs text-ink-soft">
-          La facture sera générée automatiquement à partir des consultations, prescriptions et
-          examens de cette visite.
-        </p>
-
-        <Button type="submit" className="w-full" disabled={submitting}>
-          Confirmer
-        </Button>
-      </form>
-    </Modal>
-  )
+      {visite.status === 'DISCHARGED' && (
+        <div className="alert alert-success">
+          Dossier clôturé le {new Date(visite.dateFinHospitalisation || visite.dateSortieUrgences).toLocaleString('fr-FR')}.
+        </div>
+      )}
+    </div>
+  );
 }

@@ -1,10 +1,10 @@
-// repository/AuditLogRepository.java
 package com.hopital.urgences.repository;
 
-import com.hopital.urgences.model.AuditLog;
+import com.hopital.urgences.model.audit.AuditLog;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
-import java.util.List;
 
 public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
-    List<AuditLog> findByEntiteOrderByDateHeureDesc(String entite);
+    Page<AuditLog> findAllByOrderByDateActionDesc(Pageable pageable);
 }

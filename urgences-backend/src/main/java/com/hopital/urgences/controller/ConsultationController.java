@@ -1,54 +1,38 @@
 package com.hopital.urgences.controller;
 
-import com.hopital.urgences.dto.ConsultationRequest;
-import com.hopital.urgences.dto.ExamRequest;
-import com.hopital.urgences.dto.PrescriptionRequest;
-import com.hopital.urgences.model.Consultation;
-import com.hopital.urgences.model.Exam;
-import com.hopital.urgences.model.Prescription;
-import com.hopital.urgences.repository.ConsultationRepository;
+import com.hopital.urgences.dto.consultation.ConsultationRequest;
+import com.hopital.urgences.dto.exam.ExamRequest;
+import com.hopital.urgences.dto.prescription.PrescriptionRequest;
+import com.hopital.urgences.security.CustomUserDetails;
 import com.hopital.urgences.service.ConsultationService;
-import jakarta.persistence.EntityNotFoundException;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
-import java.util.List;
 
 @RestController
-@RequestMapping("/api/consultations")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('MEDECIN')")
 public class ConsultationController {
 
     private final ConsultationService consultationService;
-    private final ConsultationRepository consultationRepository;
 
-    @PostMapping
-    public ResponseEntity<Consultation> creer(@RequestBody @Valid ConsultationRequest requete) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(consultationService.create(requete));
+    @PostMapping("/api/visits/{visitId}/consultations")
+    public Long ouvrir(@PathVariable Long visitId, @Valid @RequestBody ConsultationRequest request,
+                        @AuthenticationPrincipal CustomUserDetails medecin) {
+        return consultationService.ouvrirConsultation(visitId, request, medecin).getId();
     }
 
-    @GetMapping("/{id}")
-    public Consultation obtenir(@PathVariable Long id) {
-        return consultationRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("Consultation introuvable: " + id));
+    @PostMapping("/api/consultations/{consultationId}/prescriptions")
+    public Long prescrire(@PathVariable Long consultationId, @Valid @RequestBody PrescriptionRequest request,
+                           @AuthenticationPrincipal CustomUserDetails medecin) {
+        return consultationService.ajouterPrescription(consultationId, request, medecin).getId();
     }
 
-    @GetMapping("/visite/{visitId}")
-    public List<Consultation> parVisite(@PathVariable Long visitId) {
-        return consultationRepository.findByVisiteId(visitId);
-    }
-
-    @PostMapping("/{id}/prescriptions")
-    public ResponseEntity<Prescription> ajouterPrescription(
-            @PathVariable Long id, @RequestBody @Valid PrescriptionRequest requete) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(consultationService.addPrescription(id, requete));
-    }
-
-    @PostMapping("/{id}/exams")
-    public ResponseEntity<Exam> ajouterExamen(
-            @PathVariable Long id, @RequestBody @Valid ExamRequest requete) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(consultationService.addExam(id, requete));
+    @PostMapping("/api/consultations/{consultationId}/exams")
+    public Long demanderExamen(@PathVariable Long consultationId, @Valid @RequestBody ExamRequest request,
+                                @AuthenticationPrincipal CustomUserDetails medecin) {
+        return consultationService.demanderExamen(consultationId, request, medecin).getId();
     }
 }

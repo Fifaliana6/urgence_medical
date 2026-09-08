@@ -1,39 +1,72 @@
 package com.hopital.urgences.service;
 
-import com.hopital.urgences.jms.ExamResultProducer;
-import com.hopital.urgences.model.Exam;
-import com.hopital.urgences.model.ExamStatus;
+import com.hopital.urgences.dto.exam.ExamDTO;
+import com.hopital.urgences.dto.exam.ExamResultRequest;
+import com.hopital.urgences.exception.ResourceNotFoundException;
+import com.hopital.urgences.model.exam.Exam;
+import com.hopital.urgences.model.exam.ExamStatus;
 import com.hopital.urgences.repository.ExamRepository;
-import jakarta.persistence.EntityNotFoundException;
+import com.hopital.urgences.security.CustomUserDetails;
+import com.hopital.urgences.websocket.NotificationPublisher;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
-@Slf4j
 public class ExamService {
 
     private final ExamRepository examRepository;
-    private final ExamResultProducer examResultProducer;
+    private final NotificationPublisher notificationPublisher;
+    private final AuditService auditService;
+    private final PdfGeneratorService pdfGeneratorService;
+
+    @Transactional(readOnly = true)
+    public List<ExamDTO> examsEnAttente() {
+        return examRepository.findByStatut(ExamStatus.EN_ATTENTE).stream().map(this::toDTO).toList();
+    }
 
     @Transactional
-    public Exam saisirResultat(Long examId, String resultat) {
+    public ExamDTO saisirResultat(Long examId, ExamResultRequest request, CustomUserDetails laboAuth) {
         Exam exam = examRepository.findById(examId)
-                .orElseThrow(() -> new EntityNotFoundException("Examen introuvable: " + examId));
-        exam.setResultat(resultat);
-        exam.setStatut(ExamStatus.RESULTAT_DISPONIBLE);
+                .orElseThrow(() -> new ResourceNotFoundException("Examen introuvable, id=" + examId));
+
+        exam.setResultat(request.getResultat());
+        exam.setStatut(ExamStatus.RESULTATS_DISPONIBLES);
+        exam.setRealisePar(laboAuth.getUser());
         exam.setDateResultat(LocalDateTime.now());
+
         exam = examRepository.save(exam);
 
-        try {
-            examResultProducer.publishResultAvailable(exam);
-        } catch (Exception e) {
-            log.error("Échec de la notification JMS pour l'examen {} : {}", exam.getId(), e.getMessage(), e);
-        }
+        Long medecinId = exam.getConsultation().getMedecin().getId();
+        Long visitId = exam.getConsultation().getVisit().getId();
 
-        return exam;
+        notificationPublisher.notifierUtilisateur(medecinId,
+                "Résultat disponible pour l'examen \"" + exam.getLibelle() + "\" — visite #" + visitId,
+                visitId);
+
+        auditService.enregistrer(laboAuth.getUser(), "SAISIE_RESULTAT_EXAMEN", visitId,
+                exam.getLibelle() + " — résultat saisi");
+
+        return toDTO(exam);
+    }
+
+    @Transactional(readOnly = true)
+    public byte[] genererRapportPdf(Long examId) {
+        Exam exam = examRepository.findById(examId)
+                .orElseThrow(() -> new ResourceNotFoundException("Examen introuvable, id=" + examId));
+        return pdfGeneratorService.genererRapportExamen(exam);
+    }
+
+    private ExamDTO toDTO(Exam e) {
+        var visit = e.getConsultation().getVisit();
+        return new ExamDTO(e.getId(), visit.getId(), e.getType(), e.getLibelle(), e.getStatut(),
+                e.getDemandePar().getNom(), e.getDateDemande(),
+                e.getRealisePar() != null ? e.getRealisePar().getNom() : null,
+                e.getResultat(), e.getDateResultat(),
+                visit.getPatient().getPrenom() + " " + visit.getPatient().getNom());
     }
 }

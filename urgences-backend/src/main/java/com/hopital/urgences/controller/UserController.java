@@ -1,41 +1,43 @@
 package com.hopital.urgences.controller;
 
-import com.hopital.urgences.dto.RegisterUserRequest;
-import com.hopital.urgences.model.User;
-import com.hopital.urgences.repository.UserRepository;
+import com.hopital.urgences.dto.DisponibiliteRequest;
+import com.hopital.urgences.dto.login.ProfileUpdateRequest;
+import com.hopital.urgences.dto.login.UserDTO;
+import com.hopital.urgences.security.CustomUserDetails;
+import com.hopital.urgences.service.UserService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/admin/users")
+@RequestMapping("/api/users")
 @RequiredArgsConstructor
 public class UserController {
 
-    private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
+    private final UserService userService;
 
-    @PostMapping
-    @PreAuthorize("hasRole('ADMIN')")
-    public ResponseEntity<User> creer(@RequestBody @Valid RegisterUserRequest requete) {
-        User user = User.builder()
-                .username(requete.username())
-                .passwordHash(passwordEncoder.encode(requete.password()))
-                .role(requete.role())
-                .nom(requete.nom())
-                .prenom(requete.prenom())
-                .build();
-        return ResponseEntity.status(HttpStatus.CREATED).body(userRepository.save(user));
+    @GetMapping("/me")
+    public UserDTO getProfil(@AuthenticationPrincipal CustomUserDetails auth) {
+        return userService.getProfile(auth.getUser().getId());
     }
 
-    @GetMapping
-    @PreAuthorize("hasRole('ADMIN')")
-    public List<User> lister() {
-        return userRepository.findAll();
+    @PutMapping("/me")
+    public UserDTO modifierProfil(@Valid @RequestBody ProfileUpdateRequest request,
+                                   @AuthenticationPrincipal CustomUserDetails auth) {
+        return userService.updateProfile(auth.getUser().getId(), request);
+    }
+
+    @PutMapping("/me/disponibilite")
+    public UserDTO changerMaDisponibilite(@Valid @RequestBody DisponibiliteRequest request,
+                                           @AuthenticationPrincipal CustomUserDetails auth) {
+        return userService.changerDisponibilite(auth.getUser().getId(), request.getDisponible());
+    }
+
+    @GetMapping("/medecins-disponibles")
+    public List<UserDTO> medecinsDisponibles() {
+        return userService.listerMedecinsDisponibles();
     }
 }

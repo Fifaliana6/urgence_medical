@@ -1,34 +1,39 @@
 package com.hopital.urgences.controller;
 
-import com.hopital.urgences.model.Invoice;
-import com.hopital.urgences.repository.InvoiceRepository;
+import com.hopital.urgences.dto.invoice.InvoiceDTO;
 import com.hopital.urgences.service.InvoiceService;
-import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/invoices")
 @RequiredArgsConstructor
+@PreAuthorize("hasAnyRole('ADMIN','RECEPTIONIST','MEDECIN')")
 public class InvoiceController {
 
-    private final InvoiceRepository invoiceRepository;
     private final InvoiceService invoiceService;
 
-    @GetMapping("/{id}")
-    public Invoice obtenir(@PathVariable Long id) {
-        return invoiceRepository.findById(id)
-                .orElseThrow(() -> new EntityNotFoundException("Facture introuvable: " + id));
+    @GetMapping("/visit/{visitId}")
+    public InvoiceDTO getParVisite(@PathVariable Long visitId) {
+        return invoiceService.getParVisite(visitId);
     }
 
-    @GetMapping("/visite/{visitId}")
-    public Invoice parVisite(@PathVariable Long visitId) {
-        return invoiceRepository.findByVisiteId(visitId)
-                .orElseThrow(() -> new EntityNotFoundException("Aucune facture pour la visite " + visitId));
-    }
-
-    @PutMapping("/{id}/payer")
-    public Invoice payer(@PathVariable Long id) {
+    @PutMapping("/{id}/paiement")
+    @PreAuthorize("hasRole('RECEPTIONIST')")
+    public InvoiceDTO marquerPayee(@PathVariable Long id) {
         return invoiceService.marquerPayee(id);
+    }
+
+    @GetMapping(value = "/{id}/pdf", produces = MediaType.APPLICATION_PDF_VALUE)
+    public ResponseEntity<byte[]> telechargerPdf(@PathVariable Long id) {
+        byte[] pdf = invoiceService.genererFacturePdf(id);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=facture-" + id + ".pdf")
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(pdf);
     }
 }
